@@ -34,6 +34,10 @@ inputs:
   re-sign:
     description: Re-sign the app bundle with new JS bundle
     required: false
+  ad-hoc:
+    description: 'Upload the APK with index.html page'
+    required: false
+    default: false
   keystore-base64:
     description: 'Base64 version of the release keystore'
     required: false
@@ -64,10 +68,10 @@ inputs:
 outputs:
   artifact-url:
     description: 'URL of the relevant Android build artifact (could be cached)'
-    value: ${{ steps.upload-artifact.outputs.artifact-url || env.ARTIFACT_URL }}
+    value: ${{ steps.upload-artifact-gh.outputs.artifact-url || env.ARTIFACT_URL }}
   artifact-id:
     description: 'ID of the relevant Android build artifact (could be cached)'
-    value: ${{ steps.upload-artifact.outputs.artifact-id || env.ARTIFACT_ID }}
+    value: ${{ steps.upload-artifact-gh.outputs.artifact-id || env.ARTIFACT_ID}}
 
 runs:
   using: 'composite'
@@ -296,7 +300,7 @@ runs:
       shell: bash
     # Special case for GitHub, as it doesn't support uploading through the API
     - name: Upload Artifact to GitHub
-      id: upload-artifact
+      id: upload-artifact-gh
       if: ${{ env.PROVIDER_NAME == 'GitHub' && (!env.ARTIFACT_URL || inputs.re-sign == 'true') }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
@@ -307,17 +311,36 @@ runs:
     # For re-signed builds, the ARTIFACT_NAME may contain PR-number, while Rock will save the artifact without PR trait in its cache.
     # We need to upload the artifact with the PR-number in the name, that's why we use --binary-path with appropriate ARTIFACT_PATH that accounts for it.
     - name: Upload Artifact to Remote Cache for re-signed builds
+      id: upload-artifact-other-resigned
       if: ${{ env.PROVIDER_NAME != 'GitHub' && inputs.re-sign == 'true' }}
       run: |
-        OUTPUT=$(npx rock remote-cache upload --name ${{ env.ARTIFACT_NAME }} --binary-path ${{ env.ARTIFACT_PATH }} --json --verbose) || (echo "$OUTPUT" && exit 1)
-        echo "ARTIFACT_URL=$(echo "$OUTPUT" | jq -r '.url')" >> $GITHUB_ENV
+        OUTPUT=$(npx rock remote-cache upload --name ${{ env.ARTIFACT_NAME }} --binary-path ${{ env.ARTIFACT_PATH }} --json 2>&1) || (echo "$OUTPUT" && exit 1)
+        echo OUTPUT "$OUTPUT"
+        ARTIFACT_URL=$(echo "$OUTPUT" | jq -r '.url')
+        echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+        echo "artifact-url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
       shell: bash
 
     - name: Upload Artifact to Remote Cache for regular builds
+      id: upload-artifact-other-regular
       if: ${{ env.PROVIDER_NAME != 'GitHub' && inputs.re-sign != 'true' && !env.ARTIFACT_URL }}
       run: |
-        OUTPUT=$(npx rock remote-cache upload --name ${{ env.ARTIFACT_NAME }} --json --verbose) || (echo "$OUTPUT" && exit 1)
-        echo "ARTIFACT_URL=$(echo "$OUTPUT" | jq -r '.url')" >> $GITHUB_ENV
+        OUTPUT=$(npx rock remote-cache upload --name ${{ env.ARTIFACT_NAME }} --json 2>&1) || (echo "$OUTPUT" && exit 1)
+        echo OUTPUT "$OUTPUT"
+        ARTIFACT_URL=$(echo "$OUTPUT" | jq -r '.url')
+        echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+        echo "artifact-url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Upload for Ad-hoc distribution
+      id: upload-artifact-other-adhoc
+      if: ${{ env.PROVIDER_NAME != 'GitHub' && inputs.ad-hoc == 'true' }}
+      run: |
+        OUTPUT=$(npx rock remote-cache upload --name ${{ env.ARTIFACT_NAME }} --binary-path "${{ env.ARTIFACT_PATH }}" --json --ad-hoc 2>&1) || (echo "$OUTPUT" && exit 1)
+        echo OUTPUT "$OUTPUT"
+        ARTIFACT_URL=$(echo "$OUTPUT" | jq -r '.url')
+        echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_ENV
+        echo "artifact-url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
       shell: bash
 
     - name: Delete Old Re-Signed Artifacts
@@ -343,5 +366,22 @@ runs:
       uses: callstackincubator/android/.github/actions/rock-post-build@v3
       with:
         title: Android ${{ inputs.variant }} APK for all devices
-        artifact-url: ${{ steps.upload-artifact.outputs.artifact-url || env.ARTIFACT_URL }}
+        artifact-url: ${{ steps.upload-artifact-gh.outputs.artifact-url || env.ARTIFACT_URL }}
         github-token: ${{ inputs.github-token }}
+
+    - name: Debug - Log Action Outputs
+      run: |
+        echo "=== All Relevant Environment Variables ==="
+        echo "env.ARTIFACT_URL: $ARTIFACT_URL"
+        echo ""
+        echo "=== Step Outputs ==="
+        echo "steps.upload-artifact-gh.outputs.artifact-url: ${{ steps.upload-artifact-gh.outputs.artifact-url }}"
+        echo "steps.upload-artifact-other-resigned.outputs.artifact-url: ${{ steps.upload-artifact-other-resigned.outputs.artifact-url }}"
+        echo "steps.upload-artifact-other-regular.outputs.artifact-url: ${{ steps.upload-artifact-other-regular.outputs.artifact-url }}"
+        echo "steps.upload-artifact-other-adhoc.outputs.artifact-url: ${{ steps.upload-artifact-other-adhoc.outputs.artifact-url }}"
+        echo ""
+        echo "=== Final Output Values ==="
+        echo "artifact-url will be: ${{ steps.upload-artifact-gh.outputs.artifact-url || env.ARTIFACT_URL }}"
+        echo "=== End Debug ==="
+      shell: bash
+
